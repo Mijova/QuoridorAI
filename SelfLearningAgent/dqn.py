@@ -27,8 +27,7 @@ class DQN(nn.Module):
             nn.ReLU(),
             nn.Linear(h, h),
             nn.ReLU(),
-            nn.Linear(h, self.action_size),
-            nn.Tanh())
+            nn.Linear(h, self.action_size))
 
     def forward(self, x):
         y = self.convNN(x[0])
