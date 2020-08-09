@@ -9,8 +9,7 @@ class DQN(nn.Module):
 
         h = 2*action_size #hidden dimension
         num_of_channels = [3, 16, 64]
-        kernel_sizes = [3, 1]
-        stride_sizes = [1, 1]
+        kernel_sizes = [3, 3, 1, 1]
 
         self.convNN = nn.Sequential(
             nn.Conv2d(num_of_channels[0], num_of_channels[1], kernel_size=kernel_sizes[0]),
@@ -27,8 +26,7 @@ class DQN(nn.Module):
             nn.ReLU(),
             nn.Linear(h, h),
             nn.ReLU(),
-            nn.Linear(h, self.action_size),
-            nn.Tanh())
+            nn.Linear(h, self.action_size))
 
     def forward(self, x):
         y = self.convNN(x[0])

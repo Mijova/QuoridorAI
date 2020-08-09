@@ -96,7 +96,6 @@ def fancy_mask(state):
     return mask
 
 def get_rotation_mask(board_size):
-    rotation = []
     board_diam = 2*board_size - 1
     num_actions = board_diam**2 - 1
     for i in range(board_diam**2):

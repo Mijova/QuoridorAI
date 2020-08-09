@@ -8,9 +8,9 @@ from collections import deque
 torch.set_default_dtype(torch.double)
 random.seed(0)
 
-# version 1.2
+# version 1.1
 #Hyper params
-EPISODES = 10001
+EPISODES = 1001
 
 #Epsilon
 EPSILON_START = 1.0
@@ -30,7 +30,7 @@ SWITCH_FREQ = 10
 UPDATE_FREQ = 16
 
 
-class DQNAgentReplay():
+class DQNAgent():
     def __init__(self, state_size, action_size):
         self.target = DQN(state_size, action_size)
         self.current = DQN(state_size, action_size)
@@ -38,7 +38,7 @@ class DQNAgentReplay():
         self.loss_fn = torch.nn.MSELoss(reduction='sum')
 
         self.memory = deque(maxlen = 2000)
-        self.batch_size =  128
+        self.batch_size =  64
         
         learning_rate = 0.0025
         self.optimizer = torch.optim.Adam(self.current.parameters(), lr=learning_rate)
@@ -60,20 +60,24 @@ class DQNAgentReplay():
             # Tip: For best performance you can use torch gradient accumulation
 
         for state, action, reward, next_state in random.sample(self.memory, self.batch_size):
-            state_action_q_values = self.current.forward(get_nn_input(game, state))
-            if next_state.is_terminal():
+          state_action_q_values = self.current.forward(get_nn_input(game, state))
+          if next_state.is_terminal():
                 with torch.no_grad():
-                    state_action_q_values_target = state_action_q_values.clone().detach()
+                    state_action_q_values_target = torch.tensor(state_action_q_values)
                     state_action_q_values_target[0][action] = reward
-            else:
-                with torch.no_grad():
-                    next_state_action_q_values = self.target.forward(get_nn_input(game, next_state))
-                    if (next_state.current_player() == 1):
-                        next_state_action_q_values  = torch.flip(next_state_action_q_values , [1])
-                    state_action_q_values_target = state_action_q_values.clone().detach()
-                    state_action_q_values_target[0][action] = reward - GAMMA * torch.max(next_state_action_q_values+fancy_mask(next_state))
-            loss = self.loss_fn(state_action_q_values, state_action_q_values_target)
-            loss.backward()
+          else:
+              with torch.no_grad():
+                  next_state_action_q_values = self.target.forward(get_nn_input(game, next_state))
+                  if (state.current_player() == 1):
+                          next_state_action_q_values  = torch.flip(next_state_action_q_values , [1])
+                  state_action_q_values_target = torch.tensor(state_action_q_values)
+                  next_mask = torch.BoolTensor(state.legal_actions_mask())
+                  next_legal_q_values = torch.masked_select(next_state_action_q_values, next_mask)
+                  state_action_q_values_target[0][action] = reward - GAMMA * torch.max(next_legal_q_values)
+
+          loss = self.loss_fn(state_action_q_values, state_action_q_values_target)
+          loss.backward()
+
         self.optimizer.step()
         self.optimizer.zero_grad()
 
@@ -87,16 +91,10 @@ def get_nn_input(game, state):
     obs[[0, 1]] = obs[[1, 0]]
     return obs[:3].unsqueeze(0), torch.tensor([[obs[4,1,1], obs[3,0,0]]])
 
-def fancy_mask(state):
-    mask = torch.tensor(state.legal_actions_mask(), dtype=torch.float64)
-    mask[mask==0] = float("-inf")
-    mask[mask==1] = 0
-    return mask
-
 def main():
     game = pyspiel.load_game(f"quoridor(ansi_color_output=true,board_size={BOARD_SIZE},wall_count={WALL_COUNT})")
     board_diam = 2*BOARD_SIZE-1
-    agent = DQNAgentReplay(2*BOARD_SIZE-1, game.num_distinct_actions())
+    agent = DQNAgent(2*BOARD_SIZE-1, game.num_distinct_actions())
     epsilon = EPSILON_START
     results = []
     wins, draws, loses = (0, 0, 0)
@@ -110,37 +108,62 @@ def main():
         #Loop inside one game episode
         while not state.is_terminal():
             pl = state.current_player()
+            nn_input = get_nn_input(game, state)
 
-            with torch.no_grad():
-                state_action_q_values = agent.forward(get_nn_input(game, state))
+            # state_action_q_values = agent.forward(nn_input)
+            # if random.random() <= epsilon:
+            #     action = random.choice(state.legal_actions())
+            # else:
+            #     action = torch.argmax((state_action_q_values+1)*torch.tensor(state.legal_actions_mask())).item()
+            # state.apply_action(action)
+
+            state_action_q_values = agent.forward(get_nn_input(game, state))
             rotated_state_action_q_values = state_action_q_values if state.current_player() == 0 else torch.flip(state_action_q_values.clone(), [1])
-            
-            actual_action = torch.argmax(rotated_state_action_q_values+fancy_mask(state)).item()
-            rotated_action = actual_action if state.current_player() == 0 else (board_diam**2-1) - actual_action
-            if (actual_action not in state.legal_actions()): print(True)
-            if actual_action not in state.legal_actions() or random.random() <= epsilon:
+            if random.random() <= epsilon:
                 actual_action = random.choice(state.legal_actions())
+                rotated_action = actual_action if state.current_player() == 0 else (board_diam**2-1) - actual_action
+            else:
+                actual_action = torch.argmax((rotated_state_action_q_values+1)*torch.tensor(state.legal_actions_mask())).item()
                 rotated_action = actual_action if state.current_player() == 0 else (board_diam**2-1) - actual_action
             old_state = state.clone()
             state.apply_action(actual_action)
 
             rewards = state.rewards()
-            agent.remember(old_state, rotated_action, rewards[pl], state)
+
+            agent.remember(old_state, rotated_action, rewards[0], state)
+            # if state.is_terminal():
+            #     with torch.no_grad():
+            #         state_action_q_values_target = torch.tensor(state_action_q_values)
+            #         state_action_q_values_target[0][rotated_action] = rewards[pl]
+            #     # prev_state_action_q_values = agent.forward(prev_input)
+            #     # with torch.no_grad():
+            #     #     prev_state_action_q_values_target = torch.tensor(prev_state_action_q_values)
+            #     #     prev_state_action_q_values_target[0][action] = rewards[1-pl]
+            #     # agent.backward(prev_state_action_q_values, prev_state_action_q_values_target)
+            # else:
+            #     with torch.no_grad():
+            #         next_state_action_q_values = agent.forward(get_nn_input(game, state))
+            #         if (state.current_player() == 1):
+            #                 next_state_action_q_values  = torch.flip(next_state_action_q_values , [1])
+            #         state_action_q_values_target = torch.tensor(state_action_q_values)
+            #         next_mask = torch.BoolTensor(state.legal_actions_mask())
+            #         next_legal_q_values = torch.masked_select(next_state_action_q_values, next_mask)
+            #         state_action_q_values_target[0][rotated_action] = rewards[pl] - GAMMA * torch.max(next_legal_q_values)
 
             if episode > 10 and episode % UPDATE_FREQ == 0 and not state.is_terminal():       
                 agent.backward(game)
 
         if (rewards[0] == 1): wins += 1
-        elif (rewards[0] == 0): draws += 1
-        elif (rewards[0] == -1): loses += 1
+        if (rewards[0] == 0): draws += 1
+        if (rewards[0] == -1): loses += 1
         if (episode % 100 == 0):
             print("Episode: ", episode, epsilon)
             print(f"W:{wins}, D:{draws}, L:{loses}") 
             wins, draws, loses = (0, 0, 0)
         if epsilon > EPSILON_END:
             epsilon -= EPSILON_DECAY
-        if (episode %  500 == 0):
-            torch.save(agent, f"/mnt/QuoridorAI/Agents/SelfLearnedER{BOARD_SIZE}x{BOARD_SIZE}-{episode}")
+        #if (episode %  500 == 0):
+            #torch.save(agent, f"/mnt/QuoridorAI/Agents/SelfLearned{episode}")
 
 if __name__ == '__main__':
     main()
